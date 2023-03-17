@@ -5,3 +5,8 @@
 # Marzo 2023
 ################################################################################
 rm(list = ls())
+
+# Load data
+gen_data <- read.csv('data/taller1_data.txt')
+
+head(gen_data)
