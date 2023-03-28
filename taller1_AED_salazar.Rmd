@@ -1,0 +1,190 @@
+---
+title: "Taller 1 Análisis Avanzadado de Datos"
+author: "Andrés Salazar Mejía"
+output:
+  html_document:
+    df_print: paged
+---
+
+En el presente documento se desarrolla el taller 1 del curso de Análisis Avanzado de Datos de la maestría MACC. En este taller se busca determinar cuáles de los 5000 genes muestrados son de relevancia para la predecir la efectividad de un tratamiento anticancer.
+
+# Dependencias y configuraciones
+
+* install.packages("glmnet")
+
+```{r}
+rm(list = ls())
+SEED <- 1
+
+library(glmnet)
+```
+
+# Exploración
+
+Cargamos los datos y revisamos las dimensiones.
+
+```{r}
+gen_data <- read.csv('data/taller1.txt')
+data_x <- gen_data[,2:ncol(gen_data)]
+cat('Número de observaciones:', ncol(data_x))
+cat('Número de covariables:', nrow(data_x))
+```
+
+Estadísticas descriptivas de la efectividad del tratamiento anticancer.
+
+```{r}
+summary(gen_data$y)
+```
+
+### Tarea 1: ¿Hay multicolinealidad?
+
+Para responder a esta pregunta podemos remitirnos a la teoría de independencia lineal y ver los datos de las variables explicativas, V1 a V5000, como una matriz donde las observaciones son las filas y las variables son las columnas, obteniendo así una matriz *M* de dimensiones 1200 x 5000. Luego, como *M* tiene menos filas que columnas, las columnas de *M* son linealmente dependientes, que se puede demostrar por contradicción usando el teorema de rango y nulidad. Por tanto, unas de las variables explicativas resultan de combinaciones lineales de otras variables, obteniendo así una relación linean significativa entre las covariables, confirmando la existencia de multicolinealidad en los datos.
+
+# Selección de modelo
+
+### Tarea 2: Separar conjunto de datos.
+Aquí se separa el conjunto de datos en entrenamiento (1000 observaciones) y prueba (200 observaciones).
+
+```{r}
+set.seed(SEED)
+num_obs <- nrow(gen_data)
+train_idx <- sample(num_obs, 1000)
+test_idx <- seq(num_obs)[!seq(num_obs) %in% train_idx]
+
+train_data <- gen_data[train_idx,]
+test_data <- gen_data[test_idx,]
+```
+
+### Tarea 3: Hallar *lambdas* de Ridge y Lasso.
+
+Se realiza validación cruzada (VC) con 10 particiones tomando error cuadrático medio (ECM) como función de perdida, y probando 100 diferentes valores del hiperparámetro *lambda*. El rango en que se escogen los valores de *lamdba* a probar varían según el modelo dependiendo del rango en el que se ve variación del ECM.
+
+Para la regresión Ridge se escoge el valor de *lambda* entre 0.00001 y 2.
+
+```{r}
+l_seq_r <- seq(0.00001, 2, length = 100)
+cv_ridge <- cv.glmnet(as.matrix(train_data[,-1]), train_data$y, 
+                      alpha = 0, lambda = l_seq_r,
+                      nfolds = 10, type.measure = "mse")
+lambda_r <- cv_ridge$lambda.min
+plot(cv_ridge$lambda, cv_ridge$cvm,
+     xlab = "Lambda", ylab = "ECM", main = "VC - Ridge")
+```
+
+Para la regresión Lasso se escoge el valor de *lambda* entre 0.0001 y 1.
+
+```{r}
+l_seq_l <- seq(0.0001, 1, length = 100)
+cv_lasso <- cv.glmnet(as.matrix(train_data[,-1]), train_data$y, 
+                      alpha = 1, lambda = l_seq_l,
+                      nfolds = 10, type.measure = "mse")
+lambda_l <- cv_lasso$lambda.min
+plot(cv_lasso$lambda, cv_lasso$cvm,
+     xlab = "Lambda", ylab = "ECM", main = "VC - Lasso")
+```
+
+Luego los valores de *lambda* escogidos son:
+
+```{r}
+cat("Ridge:", lambda_r)
+cat("Lasso:", lambda_l)
+```
+
+### Tarea 4: Ajustar regresiones con mejores hiper parámetros.
+
+Se ajustan modelos con los mejores *lambda* hallados usando los 1000 datos de entrenamiento.
+
+```{r}
+mod_ridge <- glmnet(as.matrix(train_data[,-1]), train_data$y, 
+                    alpha = 0, lambda = lambda_r)
+mod_lasso <- glmnet(as.matrix(train_data[,-1]), train_data$y, 
+                    alpha = 1, lambda = lambda_l)
+```
+
+### Tarea 5: Comparar Ridge y Lasso en datos de prueba.
+
+Para elegir entre los modelos Ridge y Lasso ajustados con los mejores hiper parámetros se comparan el ECM de ambos en los datos de prueba (test).
+
+Realizamos la predicción con las covariables en los datos de prueba.
+
+```{r}
+pred_ridge <- predict(mod_ridge, as.matrix(test_data[,-1]))
+pred_lasso <- predict(mod_lasso, as.matrix(test_data[,-1]))
+```
+
+Estimamos el ECM de ambas muestras.
+
+```{r}
+cat("ECM - Ridge:", mean(pred_ridge - test_data$y)^2)           
+cat("ECM - Lasso:", mean(pred_lasso - test_data$y)^2)
+```
+
+Con estos resultados se escoge el modelo Lasso como el más apropiado para predicción debido a que es aquel que minimiza la función de perdida contemplada, el ECM.
+
+
+
+# Modelo final
+
+### Tarea 6: Ajustar mejor modelo con todos los datos.
+
+Una vez se ha escogido el modelo, este se re-entrena con los mismos parámetros, pero usando todos los datos que se tienen disponibles.
+
+```{r}
+mod_l_final <- glmnet(as.matrix(data_x), gen_data$y, 
+                      alpha = 1, lambda = lambda_l)
+```
+
+Ahora aprovechamos la propiedad de la regresión Lasso de llevar a 0 los coeficientes covariables no significativas para determinar cuantas covariables resultan relevantes para el problema de regresión.
+
+```{r}
+coefs_l <- as.data.frame(as.array(coef(mod_l_final)))
+coefs_nz <- subset(coefs_l, s0 != 0)
+
+cat("Número de variables relevantes:", nrow(coefs_nz)-1)
+```
+
+Veamos como son las magnitudes de las covariables relevantes
+
+```{r}
+fig <- barplot(coefs_nz$s0, main='Coeficientes diferentes de 0',
+               ylim=c(0, 1), ylab = 'Magnitud coeficiente')
+axis(1, at = fig, labels = rownames(coefs_nz), lwd = 0)
+```
+
+Aquí podemos ver que el intercepto toma un valor negativo, mientras las primeras 20 covariables toman coeficientes entre 0.8 y 1, y las demás covariables relevantes tienen coeficientes positivos y negativos cercanos a 0.
+
+Así, los genes relevantes para el problema de predicción, que son:
+
+```{r}
+rownames(coefs_nz)
+```
+
+
+
+### Tarea 7: Graficar traza de los coeficientes
+
+Finalmente, podemos ver como el valor de los coeficientes varía al cambiar los valores del *lambda*. Para esto  estimaremos el modelo Lasso anterior con 100 valores de *lambda* entre 0.0001 y 1. En la siguiente gráfica podemos ver la traza de los coeficientes em función de penalización en escala logarítmica, recuerde que log(0.0001) = -9.21 y log(1) = 0.
+
+```{r}
+mod_l_test <- glmnet(as.matrix(data_x), gen_data$y, 
+                      alpha = 1, lambda = l_seq_l)
+plot(mod_l_test, xvar="lambda", label=TRUE,
+     main = "",
+     xlab = "log(Lambda)", ylab = "Coeficientes")
+axis(side = 3,
+     at = seq(par("usr")[1], par("usr")[2], len = 1000), 
+     tck = -0.5,
+     lwd = 2, 
+     col = "white", 
+     labels = F)
+```
+
+En este gráfica cada línea representa una de los 5000 covariables con las cuales se entrenó el modelo, aquí podemos ver que a medida que aumenta el valor de *lambda*, la penalización, los coeficientes se vuelven 0. Particularmente, podemos ver que desde 0.1353 (log(0.1353) ~ 2) solo permeneces los coeficientes de los primeros 20 genes.
+
+
+
+# Conclusiones
+
+### Tarea 8: Resultados obtenidos
+
+En el desarrollo de este ejercicio encontramos que los genes más relevantes para determinar la efectividad del tratamiento anticancer son los primeros 20 (V1 - V20), y que la magnitud y relevancia de sus coeficientes puede disminuir considerablemente a medida que se aumenta la penalización. Además, dado que son relativamente pocos los genes que resultan relevantes el modelo Lasso resulta más práctico, además de tener menor ECM, debido a que lleva a 0 los coeficientes de las variables no relevantes obteniendo un modelo más parsimonioso.
